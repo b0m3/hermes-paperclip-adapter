@@ -13,6 +13,9 @@ import type {
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
 import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
@@ -21,6 +24,36 @@ const execFileAsync = promisify(execFile);
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+function parseDotEnv(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+function loadHermesEnvFile(): Record<string, string> {
+  try {
+    const envPath = join(homedir(), ".hermes", ".env");
+    const content = readFileSync(envPath, "utf-8");
+    return parseDotEnv(content);
+  } catch {
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,10 +175,15 @@ function checkApiKeys(
     if (typeof value === "string" && value.length > 0) resolvedEnv[key] = value;
   }
 
-  const has = (key: string): boolean =>
-    !!(resolvedEnv[key] ?? process.env[key]);
+  const hermesEnv = loadHermesEnvFile();
 
-  const hasAnthropic = has("ANTHROPIC_API_KEY");
+  const has = (key: string): boolean =>
+    !!(resolvedEnv[key] ?? process.env[key] ?? hermesEnv[key]);
+
+  const hasAnthropic =
+    has("ANTHROPIC_API_KEY") ||
+    has("ANTHROPIC_TOKEN") ||
+    has("ANTHROPIC_AUTH_TOKEN");
   const hasOpenRouter = has("OPENROUTER_API_KEY");
   const hasOpenAI = has("OPENAI_API_KEY");
   const hasZai = has("ZAI_API_KEY");

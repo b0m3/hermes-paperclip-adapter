@@ -47,6 +47,26 @@ npm install hermes-paperclip-adapter
 
 ## Quick Start
 
+### Zero-config default behavior (recommended)
+
+If `adapterConfig.model` and `adapterConfig.provider` are left unset, this adapter now inherits Hermes native defaults from your local Hermes setup:
+
+- Model defaults from `~/.hermes/config.yaml`
+- Provider resolution handled by Hermes itself (adapter does not force `--provider`)
+- `~/.hermes/.env` is loaded as fallback runtime env (without overriding explicit Paperclip env)
+
+This makes clone-and-run setups much safer and more portable across machines.
+
+### Upgrade note (important)
+
+After updating adapter code in a running Paperclip environment:
+
+1. Stop old Paperclip/Hermes worker processes
+2. Deploy/rebuild the updated adapter
+3. Start the processes again
+
+If old processes stay alive, they may keep old adapter code in memory.
+
 ### 1. Register the adapter in your Paperclip server
 
 Add to your Paperclip server's adapter registry (`server/src/adapters/registry.ts`):
@@ -82,7 +102,6 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
   "name": "Hermes Engineer",
   "adapterType": "hermes_local",
   "adapterConfig": {
-    "model": "anthropic/claude-sonnet-4",
     "maxIterations": 50,
     "timeoutSec": 300,
     "persistSession": true,
@@ -90,6 +109,8 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
   }
 }
 ```
+
+Tip: add `model` and `provider` only when you intentionally want Paperclip to override Hermes defaults.
 
 ### 3. Assign work
 
@@ -106,8 +127,8 @@ Create issues in Paperclip and assign them to your Hermes agent. On each heartbe
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | string | `anthropic/claude-sonnet-4` | Model in `provider/model` format |
-| `provider` | string | *(auto-detected)* | API provider: `auto`, `openrouter`, `nous`, `openai-codex`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` |
+| `model` | string | *(Hermes default)* | Model in `provider/model` format. If unset, inherits `~/.hermes/config.yaml` |
+| `provider` | string | *(Hermes default)* | API provider override. If unset, adapter does not force `--provider` and Hermes resolves provider natively |
 | `timeoutSec` | number | `300` | Execution timeout in seconds |
 | `graceSec` | number | `10` | Grace period before SIGKILL |
 

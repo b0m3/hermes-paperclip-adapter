@@ -35,7 +35,6 @@ import {
   HERMES_CLI,
   DEFAULT_TIMEOUT_SEC,
   DEFAULT_GRACE_SEC,
-  DEFAULT_MODEL,
   VALID_PROVIDERS,
 } from "../shared/constants.js";
 
@@ -43,6 +42,10 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -61,6 +64,36 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+
+function parseDotEnv(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+async function loadHermesEnvFile(): Promise<Record<string, string>> {
+  try {
+    const envPath = join(homedir(), ".hermes", ".env");
+    const content = await readFile(envPath, "utf-8");
+    return parseDotEnv(content);
+  } catch {
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +349,9 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = cfgString(config.hermesCommand) || HERMES_CLI;
-  const model = cfgString(config.model) || DEFAULT_MODEL;
+  // Leave model unset by default so Hermes uses its own configured default
+  // from ~/.hermes/config.yaml (single source of truth).
+  const model = cfgString(config.model);
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
@@ -326,33 +361,32 @@ export async function execute(
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
 
-  // ── Resolve provider (defense in depth) ────────────────────────────────
-  // Priority chain:
-  //   1. Explicit provider in adapterConfig (user override)
-  //   2. Provider from ~/.hermes/config.yaml (detected at runtime)
-  //   3. Provider inferred from model name prefix
-  //   4. "auto" (let Hermes decide)
-  //
-  // This ensures that even if the agent was created before provider tracking
-  // was added, or if the model was changed without updating provider, the
-  // correct provider is still used.
+  // ── Resolve provider (inherit Hermes defaults by default) ──────────────
+  // If provider is explicitly set in adapterConfig, pass it through.
+  // Otherwise, do NOT force --provider; let Hermes resolve provider from its
+  // own config/environment. This avoids Paperclip-side inference mismatches.
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
-    try {
-      detectedConfig = await detectModel();
-    } catch {
-      // Non-fatal — detection failure shouldn't block execution
-    }
+  try {
+    detectedConfig = await detectModel();
+  } catch {
+    // Non-fatal — detection failure shouldn't block execution
   }
 
-  const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
+  const { provider: resolvedProvider } = resolveProvider({
     explicitProvider,
     detectedProvider: detectedConfig?.provider,
     detectedModel: detectedConfig?.model,
-    model,
+    model: model || detectedConfig?.model,
   });
+
+  const shouldPassProvider =
+    !!explicitProvider &&
+    (VALID_PROVIDERS as readonly string[]).includes(explicitProvider);
+
+  // Use Hermes-configured model when Paperclip model is not set.
+  const effectiveModel = model || detectedConfig?.model;
 
   // ── Build prompt ───────────────────────────────────────────────────────
   const prompt = buildPrompt(ctx, config);
@@ -363,13 +397,13 @@ export async function execute(
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
-    args.push("-m", model);
+  if (effectiveModel) {
+    args.push("-m", effectiveModel);
   }
 
-  // Always pass --provider when we have a resolved one (not "auto").
-  // "auto" means Hermes will decide on its own — no need to pass it.
-  if (resolvedProvider !== "auto") {
+  // Only pass --provider when explicitly configured in adapterConfig.
+  // Otherwise inherit Hermes-native provider resolution.
+  if (shouldPassProvider && resolvedProvider !== "auto") {
     args.push("--provider", resolvedProvider);
   }
 
@@ -420,9 +454,28 @@ export async function execute(
   const taskId = cfgString(ctx.config?.taskId);
   if (taskId) env.PAPERCLIP_TASK_ID = taskId;
 
+  const hermesEnv = await loadHermesEnvFile();
+  if (Object.keys(hermesEnv).length > 0) {
+    for (const [k, v] of Object.entries(hermesEnv)) {
+      if (!(k in env)) env[k] = v;
+    }
+  }
+
   const userEnv = config.env as Record<string, string> | undefined;
   if (userEnv && typeof userEnv === "object") {
     Object.assign(env, userEnv);
+  }
+
+  // Normalize Anthropic credentials for mixed toolchains:
+  // Claude Code custom-gateway setups often expose ANTHROPIC_AUTH_TOKEN,
+  // while Hermes runtime expects ANTHROPIC_TOKEN / ANTHROPIC_API_KEY.
+  const authToken =
+    typeof env.ANTHROPIC_AUTH_TOKEN === "string"
+      ? env.ANTHROPIC_AUTH_TOKEN.trim()
+      : "";
+  if (authToken) {
+    if (!env.ANTHROPIC_TOKEN) env.ANTHROPIC_TOKEN = authToken;
+    if (!env.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = authToken;
   }
 
   // ── Resolve working directory ──────────────────────────────────────────
@@ -437,7 +490,7 @@ export async function execute(
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
     "stdout",
-    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
+    `[hermes] Starting Hermes Agent (model=${effectiveModel || "(hermes default)"}, provider=${shouldPassProvider ? `${resolvedProvider} [adapterConfig]` : "(hermes default)"}, timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
   if (prevSessionId) {
     await ctx.onLog(
@@ -494,8 +547,8 @@ export async function execute(
     exitCode: result.exitCode,
     signal: result.signal,
     timedOut: result.timedOut,
-    provider: resolvedProvider,
-    model,
+    provider: shouldPassProvider ? resolvedProvider : "auto",
+    model: effectiveModel || "",
   };
 
   if (parsed.errorMessage) {
