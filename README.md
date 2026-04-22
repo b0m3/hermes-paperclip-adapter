@@ -1,77 +1,58 @@
-# Paperclip Adapter for Hermes Agent
+# Hermes Paperclip Adapter (Self-Hosted Edition)
 
-A [Paperclip](https://paperclip.ing) adapter that lets you run [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a managed employee in a Paperclip company.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-Hermes Agent is a full-featured AI agent by [Nous Research](https://nousresearch.com) with 30+ native tools, persistent memory, session persistence, 80+ skills, MCP support, and multi-provider model access.
+This repository is a specialized fork of the upstream [Hermes Paperclip Adapter](https://github.com/NousResearch/hermes-paperclip-adapter), optimized for self-hosted environments and local development workflows.
 
-## Key Features
+It simplifies integration by enabling plug-and-play behavior with native Hermes configuration defaults.
 
-This adapter provides:
+## Key Enhancements in This Fork
 
-- **8 inference providers** — Anthropic, OpenRouter, OpenAI, Nous, OpenAI Codex, ZAI, Kimi Coding, MiniMax
-- **Skills integration** — Scans both Paperclip-managed and Hermes-native skills (`~/.hermes/skills/`), with sync/list/resolve APIs
-- **Structured transcript parsing** — Raw Hermes stdout is parsed into typed `TranscriptEntry` objects so Paperclip renders proper tool cards with status icons and expand/collapse
-- **Rich post-processing** — Converts Hermes ASCII banners, setext headings, and `+--+` table borders into clean GFM markdown
-- **Comment-driven wakes** — Agents wake to respond to issue comments, not just task assignments
-- **Auto model detection** — Reads `~/.hermes/config.yaml` to pre-populate the UI with the user's configured model
-- **Session codec** — Structured validation and migration of session state across heartbeats
-- **Benign stderr reclassification** — MCP init messages and structured logs are reclassified so they don't appear as errors in the UI
-- **Session source tagging** — Sessions are tagged as `tool` source so they don't clutter the user's interactive history
-- **Filesystem checkpoints** — Optional `--checkpoints` for rollback safety
-- **Thinking effort control** — Passes `--reasoning-effort` for thinking/reasoning models
+Compared with upstream, this fork prioritizes zero-config operation and clone-first deployment:
 
-### Hermes Agent Capabilities
+- Native default routing:
+  - If `model` is omitted in `adapterConfig`, Hermes falls back to the default model in `~/.hermes/config.yaml`.
+  - If `provider` is omitted, the adapter does not force `--provider`; Hermes resolves it natively.
+- Smart environment fallback:
+  - Loads `~/.hermes/.env` automatically when variables are not explicitly provided by Paperclip.
+- Credential normalization:
+  - Supports mixed naming conventions (for example, maps `ANTHROPIC_AUTH_TOKEN` to `ANTHROPIC_API_KEY` when needed).
+- Clone-first workflow:
+  - Optimized for `git clone` deployment instead of npm registry installation, suitable for local customization.
 
-| Feature | Claude Code | Codex | Hermes Agent |
-|---------|------------|-------|-------------|
-| Persistent memory | ❌ | ❌ | ✅ Remembers across sessions |
-| Native tools | ~5 | ~5 | 30+ (terminal, file, web, browser, vision, git, etc.) |
-| Skills system | ❌ | ❌ | ✅ 80+ loadable skills |
-| Session search | ❌ | ❌ | ✅ FTS5 search over past conversations |
-| Sub-agent delegation | ❌ | ❌ | ✅ Parallel sub-tasks |
-| Context compression | ❌ | ❌ | ✅ Auto-compresses long conversations |
-| MCP client | ❌ | ❌ | ✅ Connect to any MCP server |
-| Multi-provider | Anthropic only | OpenAI only | ✅ 8 providers out of the box |
+## Installation and Setup
 
-## Installation
+### 1) Clone and Build
 
 ```bash
-npm install hermes-paperclip-adapter
+git clone https://github.com/b0m3/hermes-paperclip-adapter.git
+cd hermes-paperclip-adapter
+
+npm install
+npm run build
+npm run typecheck
 ```
 
-### Prerequisites
+### 2) Connect to Paperclip Server
 
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed (`pip install hermes-agent`)
-- Python 3.10+
-- At least one LLM API key (Anthropic, OpenRouter, or OpenAI)
+In your Paperclip project, point dependency to the local adapter path:
 
-## Quick Start
+```json
+{
+  "dependencies": {
+    "hermes-paperclip-adapter": "file:../hermes-paperclip-adapter"
+  }
+}
+```
 
-### Zero-config default behavior (recommended)
+Adjust `../` to match your directory structure, then run `npm install` in the Paperclip project.
 
-If `adapterConfig.model` and `adapterConfig.provider` are left unset, this adapter now inherits Hermes native defaults from your local Hermes setup:
+### 3) Register the Adapter
 
-- Model defaults from `~/.hermes/config.yaml`
-- Provider resolution handled by Hermes itself (adapter does not force `--provider`)
-- `~/.hermes/.env` is loaded as fallback runtime env (without overriding explicit Paperclip env)
+Register in Paperclip server (typically `server/src/adapters/registry.ts`):
 
-This makes clone-and-run setups much safer and more portable across machines.
-
-### Upgrade note (important)
-
-After updating adapter code in a running Paperclip environment:
-
-1. Stop old Paperclip/Hermes worker processes
-2. Deploy/rebuild the updated adapter
-3. Start the processes again
-
-If old processes stay alive, they may keep old adapter code in memory.
-
-### 1. Register the adapter in your Paperclip server
-
-Add to your Paperclip server's adapter registry (`server/src/adapters/registry.ts`):
-
-```typescript
+```ts
 import * as hermesLocal from "hermes-paperclip-adapter";
 import {
   execute,
@@ -93,9 +74,11 @@ registry.set("hermes_local", {
 });
 ```
 
-### 2. Create a Hermes agent in Paperclip
+## Configuration
 
-In the Paperclip UI or via API, create an agent with adapter type `hermes_local`:
+### Minimal Agent Configuration
+
+With native routing enabled, agent configuration can stay minimal while inheriting local Hermes defaults.
 
 ```json
 {
@@ -110,140 +93,25 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
 }
 ```
 
-Tip: add `model` and `provider` only when you intentionally want Paperclip to override Hermes defaults.
+## Security and Best Practices
 
-### 3. Assign work
+1. Environment secrets:
+   - Never commit `.env` files.
+   - Keep local secrets in `~/.hermes/.env`.
+2. Process management:
+   - Always restart Paperclip/Hermes workers after adapter updates to avoid stale module cache.
+3. Least privilege:
+   - Use API keys scoped to the minimum required permissions.
 
-Create issues in Paperclip and assign them to your Hermes agent. On each heartbeat, Hermes will:
+## Prerequisites
 
-1. Receive the task instructions
-2. Use its full tool suite to complete the work
-3. Report results back to Paperclip
-4. Persist session state for continuity
+- Hermes CLI installed and available as `hermes`
+- Python 3.10+
+- Node.js 20+
+- Valid `~/.hermes/config.yaml` for zero-config routing
 
-## Configuration Reference
+## License and Attribution
 
-### Core
+This project is licensed under the MIT License and inherits licensing obligations from the upstream project.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `model` | string | *(Hermes default)* | Model in `provider/model` format. If unset, inherits `~/.hermes/config.yaml` |
-| `provider` | string | *(Hermes default)* | API provider override. If unset, adapter does not force `--provider` and Hermes resolves provider natively |
-| `timeoutSec` | number | `300` | Execution timeout in seconds |
-| `graceSec` | number | `10` | Grace period before SIGKILL |
-
-### Tools
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `toolsets` | string | *(all)* | Comma-separated toolsets to enable (e.g. `"terminal,file,web"`) |
-
-Available toolsets: `terminal`, `file`, `web`, `browser`, `code_execution`, `vision`, `mcp`, `creative`, `productivity`
-
-### Session & Workspace
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `persistSession` | boolean | `true` | Resume sessions across heartbeats |
-| `worktreeMode` | boolean | `false` | Git worktree isolation |
-| `checkpoints` | boolean | `false` | Enable filesystem checkpoints for rollback |
-
-### Advanced
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `hermesCommand` | string | `hermes` | Custom CLI binary path |
-| `verbose` | boolean | `false` | Enable verbose output |
-| `quiet` | boolean | `true` | Quiet mode (clean output, no banner/spinner) |
-| `extraArgs` | string[] | `[]` | Additional CLI arguments |
-| `env` | object | `{}` | Extra environment variables |
-| `promptTemplate` | string | *(built-in)* | Custom prompt template |
-| `paperclipApiUrl` | string | `http://127.0.0.1:3100/api` | Paperclip API base URL |
-
-### Prompt Template Variables
-
-Use `{{variable}}` syntax in `promptTemplate`:
-
-| Variable | Description |
-|----------|-------------|
-| `{{agentId}}` | Paperclip agent ID |
-| `{{agentName}}` | Agent display name |
-| `{{companyId}}` | Company ID |
-| `{{companyName}}` | Company name |
-| `{{runId}}` | Current heartbeat run ID |
-| `{{taskId}}` | Assigned task/issue ID |
-| `{{taskTitle}}` | Task title |
-| `{{taskBody}}` | Task instructions |
-| `{{projectName}}` | Project name |
-| `{{paperclipApiUrl}}` | Paperclip API base URL |
-| `{{commentId}}` | Comment ID (when woken by a comment) |
-| `{{wakeReason}}` | Reason this run was triggered |
-
-Conditional sections:
-
-- `{{#taskId}}...{{/taskId}}` — included only when a task is assigned
-- `{{#noTask}}...{{/noTask}}` — included only when no task (heartbeat check)
-- `{{#commentId}}...{{/commentId}}` — included only when woken by a comment
-
-## Architecture
-
-```
-Paperclip                          Hermes Agent
-┌──────────────────┐               ┌──────────────────┐
-│  Heartbeat       │               │                  │
-│  Scheduler       │───execute()──▶│  hermes chat -q  │
-│                  │               │                  │
-│  Issue System    │               │  30+ Tools       │
-│  Comment Wakes   │◀──results─────│  Memory System   │
-│                  │               │  Session DB      │
-│  Cost Tracking   │               │  Skills          │
-│                  │               │  MCP Client      │
-│  Skill Sync      │◀──snapshot────│  ~/.hermes/skills│
-│  Org Chart       │               │                  │
-└──────────────────┘               └──────────────────┘
-```
-
-The adapter spawns Hermes Agent's CLI in single-query mode (`-q`). Hermes
-processes the task using its full tool suite, then exits. The adapter:
-
-1. **Captures** stdout/stderr and parses token usage, session IDs, and cost
-2. **Parses** raw output into structured `TranscriptEntry` objects (tool cards with status icons)
-3. **Post-processes** Hermes ASCII formatting (banners, setext headings, table borders) into clean GFM markdown
-4. **Reclassifies** benign stderr (MCP init, structured logs) so they don't show as errors
-5. **Tags** sessions as `tool` source to keep them separate from interactive usage
-6. **Reports** results back to Paperclip with cost, usage, and session state
-
-Session persistence works via Hermes's `--resume` flag — each run picks
-up where the last one left off, maintaining conversation context,
-memories, and tool state across heartbeats. The `sessionCodec` validates
-and migrates session state between runs.
-
-### Skills Integration
-
-The adapter scans two skill sources and merges them:
-
-- **Paperclip-managed skills** — bundled with the adapter, togglable from the UI
-- **Hermes-native skills** — from `~/.hermes/skills/`, read-only, always loaded
-
-The `listSkills` / `syncSkills` APIs expose a unified snapshot so the
-Paperclip UI can display both managed and native skills in one view.
-
-## Development
-
-```bash
-git clone https://github.com/NousResearch/hermes-paperclip-adapter
-cd hermes-paperclip-adapter
-npm install
-npm run build
-```
-
-## License
-
-MIT — see [LICENSE](LICENSE)
-
-## Links
-
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent) — The AI agent this adapter runs
-- [Paperclip](https://github.com/paperclipai/paperclip) — The orchestration platform
-- [Nous Research](https://nousresearch.com) — The team behind Hermes
-- [Paperclip Docs](https://paperclip.ing/docs) — Paperclip documentation
+This fork is maintained independently for the community and is not an official upstream distribution.
